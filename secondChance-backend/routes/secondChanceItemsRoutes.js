@@ -1,137 +1,52 @@
 const express = require('express');
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
-const router = express.Router();
+const bcryptjs = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 const connectToDatabase = require('../models/db');
-const logger = require('../logger');
+const router = express.Router();
+const dotenv = require('dotenv');
+const pino = require('pino');  // Import Pino logger
+dotenv.config();
 
-// Define the upload directory path
-const directoryPath = 'public/images';
+const logger = pino();  // Create a Pino logger instance
 
-// Set up storage for uploaded files
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, directoryPath); // Specify the upload directory
-  },
-  filename: function (req, file, cb) {
-    cb(null, file.originalname); // Use the original file name
-  },
-});
+//Create JWT secret
+const JWT_SECRET = process.env.JWT_SECRET;
 
-const upload = multer({ storage: storage });
-
-
-// Get all secondChanceItems
-router.get('/', async (req, res, next) => {
+router.post('/register', async (req, res) => {
     try {
-        const db = await connectToDatabase();
+      //Connect to `secondChance` in MongoDB through `connectToDatabase` in `db.js`.
+      const db = await connectToDatabase();
+      const collection = db.collection("users");
+      const existingEmail = await collection.findOne({ email: req.body.email });
 
-        const collection = db.collection("secondChanceItems");
-        const secondChanceItems = await collection.find({}).toArray();
-        res.json(secondChanceItems);
-    } catch (e) {
-        logger.console.error('Something went wrong ', e)
-        next(e);
-    }
-});
-
-// Get a single secondChanceItem by ID
-router.get('/:id', async (req, res, next) => {
-    try {
-        const db = await connectToDatabase();
-        const collection = db.collection("secondChanceItems");
-        const id = req.params.id;
-        const secondChanceItem = await collection.findOne({ id: id });
-
-        if (!secondChanceItem) {
-            return res.status(404).send("secondChanceItem not found");
+        if (existingEmail) {
+            logger.error('Email id already exists');
+            return res.status(400).json({ error: 'Email id already exists' });
         }
 
-        res.json(secondChanceItem);
-    } catch (e) {
-        next(e);
-    }
-});
-
-
-// Add a new item
-router.post('/', upload.single('file'), async(req, res,next) => {
-    try {
-        const db = await connectToDatabase();
-        const collection = db.collection("secondChanceItems");
-        const lastItemQuery = await collection.find().sort({'id': -1}).limit(1);
-        let secondChanceItem = req.body;
-
-        await lastItemQuery.forEach(item => {
-            secondChanceItem.id = (parseInt(item.id) + 1).toString();
+        const salt = await bcryptjs.genSalt(10);
+        const hash = await bcryptjs.hash(req.body.password, salt);
+        const email=req.body.email;
+        const newUser = await collection.insertOne({
+            email: req.body.email,
+            firstName: req.body.firstName,
+            lastName: req.body.lastName,
+            password: hash,
+            createdAt: new Date(),
         });
-        const date_added = Math.floor(new Date().getTime() / 1000);
-        secondChanceItem.date_added = date_added
 
-        secondChanceItem = await collection.insertOne(secondChanceItem);
-        console.log(secondChanceItem);
-        res.status(201).json(secondChanceItem);
+        const payload = {
+            user: {
+                id: newUser.insertedId,
+            },
+        };
+
+        const authtoken = jwt.sign(payload, JWT_SECRET);
+        logger.info('User registered successfully');
+        res.json({ authtoken,email });
     } catch (e) {
-        next(e);
-    }
-});
-
-// Update and existing item
-router.put('/:id', async(req, res,next) => {
-    try {
-        const db = await connectToDatabase();
-        const collection = db.collection("secondChanceItems");
-        const id = req.params.id;
-        const secondChanceItem = await collection.findOne({ id });
-
-        if (!secondChanceItem) {
-            logger.error('secondChanceItem not found');
-            return res.status(404).json({ error: "secondChanceItem not found" });
-        }
-
-        secondChanceItem.category = req.body.category;
-        secondChanceItem.condition = req.body.condition;
-        secondChanceItem.age_days = req.body.age_days;
-        secondChanceItem.description = req.body.description;
-        secondChanceItem.age_years = Number((secondChanceItem.age_days/365).toFixed(1));
-        secondChanceItem.updatedAt = new Date();
-
-        const updatepreloveItem = await collection.findOneAndUpdate(
-            { id },
-            { $set: secondChanceItem },
-            { returnDocument: 'after' }
-        );
-
-
-        if(updatepreloveItem) {
-            res.json({"uploaded":"success"});
-        } else {
-            res.json({"uploaded":"failed"});
-        }
-
-    } catch (e) {
-        next(e);
-    }
-});
-
-// Delete an existing item
-router.delete('/:id', async(req, res,next) => {
-    try {
-        const db = await connectToDatabase();
-        const collection = db.collection("secondChanceItems");
-        const id = req.params.id;
-        const secondChanceItem = await collection.findOne({ id });
-
-        if (!secondChanceItem) {
-            logger.error('secondChanceItem not found');
-            return res.status(404).json({ error: "secondChanceItem not found" });
-        }
-        const updatepreloveItem = await collection.deleteOne({ id });
-
-        res.json({"deleted":"success"});
-    } catch (e) {
-        next(e);
+        logger.error(e);
+        return res.status(500).send('Internal server error');
     }
 });
 
